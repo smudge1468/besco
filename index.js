@@ -1,3 +1,7 @@
+commands.forEach((c, i) => {
+    console.log("COMMAND", i, JSON.stringify(c, null, 2));
+});
+
 const {
     Client,
     GatewayIntentBits,
