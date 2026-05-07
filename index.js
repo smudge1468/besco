@@ -19,14 +19,19 @@ const GUILD_ID = process.env.GUILD_ID;
 
 // ================= CONSTANTS =================
 const ORDER_CHANNEL_ID = "1502007957410549830";
-const ROLE_ID = "1502058557674098711";
+const DELIVERY_ROLE_ID = "1502058557674098711";
+const SHIFT_ROLE_ID = "1502005597959229471";
 
 // ================= SUPABASE =================
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ================= CLIENT =================
 const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.GuildMembers
+    ],
     partials: ["CHANNEL"]
 });
 
@@ -66,7 +71,7 @@ const commands = [
         )
         .addStringOption(o =>
             o.setName("state")
-                .setDescription("Status update")
+                .setDescription("Order status")
                 .setRequired(true)
                 .addChoices(
                     { name: "Accepted", value: "Accepted" },
@@ -102,7 +107,7 @@ const commands = [
         .setDescription("View top drivers")
 ].map(c => c.toJSON());
 
-// ================= REGISTER COMMANDS =================
+// ================= REGISTER =================
 
 const rest = new REST({ version: "10" }).setToken(TOKEN);
 
@@ -127,35 +132,6 @@ async function dm(userId, msg) {
     } catch {}
 }
 
-// ================= AUTO EXPIRE =================
-
-async function expireOrders() {
-    try {
-        const { data } = await supabase
-            .from("orders")
-            .select("*")
-            .eq("status", "Pending")
-            .eq("cancelled", false);
-
-        const now = new Date();
-
-        for (const order of data || []) {
-            if (new Date(order.expires_at) < now) {
-                await supabase
-                    .from("orders")
-                    .update({ status: "Expired" })
-                    .eq("id", order.id);
-
-                await dm(order.customer_id, `⏰ Order #${order.id} expired.`);
-            }
-        }
-    } catch (err) {
-        console.error("Expire error:", err);
-    }
-}
-
-setInterval(expireOrders, 60 * 1000);
-
 // ================= READY =================
 
 client.once("ready", async () => {
@@ -168,7 +144,7 @@ client.once("ready", async () => {
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
-    // ========== ORDER ==========
+    // ================= ORDER =================
     if (interaction.commandName === "order") {
         await interaction.deferReply({ ephemeral: true });
 
@@ -185,31 +161,31 @@ client.on("interactionCreate", async (interaction) => {
                     location,
                     customer_id: interaction.user.id,
                     status: "Pending",
-                    expires_at: expires
+                    expires_at: expires.toISOString()
                 })
                 .select()
                 .single();
 
             if (error) {
-                console.error(error);
+                console.error("SUPABASE ORDER ERROR:", error);
                 return interaction.editReply("❌ Failed to create order.");
             }
 
             const channel = await client.channels.fetch(ORDER_CHANNEL_ID);
 
             await channel.send({
-                content: `<@&${ROLE_ID}> New order #${data.id}`
+                content: `<@&${DELIVERY_ROLE_ID}> New order #${data.id}`
             });
 
             return interaction.editReply(`✅ Order placed (#${data.id})`);
 
         } catch (err) {
-            console.error(err);
-            return interaction.editReply("❌ Error placing order.");
+            console.error("ORDER ERROR:", err);
+            return interaction.editReply("❌ Unexpected error.");
         }
     }
 
-    // ========== CLAIM ==========
+    // ================= CLAIM =================
     if (interaction.commandName === "claim") {
         await interaction.deferReply({ ephemeral: true });
 
@@ -227,7 +203,10 @@ client.on("interactionCreate", async (interaction) => {
 
         await supabase
             .from("orders")
-            .update({ driver_id: interaction.user.id, status: "Accepted" })
+            .update({
+                driver_id: interaction.user.id,
+                status: "Accepted"
+            })
             .eq("id", id);
 
         await dm(order.customer_id, `🚚 Order #${id} claimed by ${interaction.user.tag}`);
@@ -235,7 +214,7 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply(`Claimed #${id}`);
     }
 
-    // ========== STATUS ==========
+    // ================= STATUS =================
     if (interaction.commandName === "status") {
         await interaction.deferReply({ ephemeral: true });
 
@@ -258,7 +237,7 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply(`Updated #${id}`);
     }
 
-    // ========== CANCEL ==========
+    // ================= CANCEL =================
     if (interaction.commandName === "cancel") {
         await interaction.deferReply({ ephemeral: true });
 
@@ -289,13 +268,21 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply(`Cancelled #${id}`);
     }
 
-    // ========== SHIFT ==========
+    // ================= SHIFT =================
     if (interaction.commandName === "shift") {
         await interaction.deferReply({ ephemeral: true });
 
+        const member = interaction.member;
         const action = interaction.options.getString("action");
 
+        // MUST HAVE SHIFT ROLE TO CLOCK IN
         if (action === "in") {
+            if (!member.roles.cache.has(SHIFT_ROLE_ID)) {
+                return interaction.editReply("❌ You are not allowed to clock in.");
+            }
+
+            await member.roles.add(DELIVERY_ROLE_ID);
+
             await supabase.from("shifts").insert({
                 user_id: interaction.user.id,
                 active: true
@@ -305,9 +292,14 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         if (action === "out") {
+            await member.roles.remove(DELIVERY_ROLE_ID);
+
             await supabase
                 .from("shifts")
-                .update({ active: false, end_time: new Date() })
+                .update({
+                    active: false,
+                    end_time: new Date().toISOString()
+                })
                 .eq("user_id", interaction.user.id)
                 .eq("active", true);
 
@@ -315,7 +307,7 @@ client.on("interactionCreate", async (interaction) => {
         }
     }
 
-    // ========== LEADERBOARD ==========
+    // ================= LEADERBOARD =================
     if (interaction.commandName === "leaderboard") {
         await interaction.deferReply();
 
