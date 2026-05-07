@@ -1,7 +1,3 @@
-commands.forEach((c, i) => {
-    console.log("COMMAND", i, JSON.stringify(c, null, 2));
-});
-
 const {
     Client,
     GatewayIntentBits,
@@ -13,6 +9,7 @@ const {
 
 const { createClient } = require("@supabase/supabase-js");
 
+// ================= ENV =================
 const TOKEN = process.env.TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
@@ -20,36 +17,56 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
+// ================= CONSTANTS =================
 const ORDER_CHANNEL_ID = "1502007957410549830";
 const ROLE_ID = "1502058557674098711";
 
+// ================= SUPABASE =================
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// ================= CLIENT =================
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
     partials: ["CHANNEL"]
 });
 
-// ---------------- COMMANDS ----------------
+// ================= COMMANDS =================
 
 const commands = [
     new SlashCommandBuilder()
         .setName("order")
-        .setDescription("Place an order")
-        .addStringOption(o => o.setName("item").setRequired(true))
-        .addStringOption(o => o.setName("location").setRequired(true)),
+        .setDescription("Place a Boosh delivery order")
+        .addStringOption(o =>
+            o.setName("item")
+                .setDescription("Food or drink")
+                .setRequired(true)
+        )
+        .addStringOption(o =>
+            o.setName("location")
+                .setDescription("Delivery location")
+                .setRequired(true)
+        ),
 
     new SlashCommandBuilder()
         .setName("claim")
-        .setDescription("Claim order")
-        .addIntegerOption(o => o.setName("id").setRequired(true)),
+        .setDescription("Claim a delivery order")
+        .addIntegerOption(o =>
+            o.setName("id")
+                .setDescription("Order ID")
+                .setRequired(true)
+        ),
 
     new SlashCommandBuilder()
         .setName("status")
         .setDescription("Update order status")
-        .addIntegerOption(o => o.setName("id").setRequired(true))
+        .addIntegerOption(o =>
+            o.setName("id")
+                .setDescription("Order ID")
+                .setRequired(true)
+        )
         .addStringOption(o =>
             o.setName("state")
+                .setDescription("Order status update")
                 .setRequired(true)
                 .addChoices(
                     { name: "Accepted", value: "Accepted" },
@@ -61,13 +78,18 @@ const commands = [
     new SlashCommandBuilder()
         .setName("cancel")
         .setDescription("Cancel an order")
-        .addIntegerOption(o => o.setName("id").setRequired(true)),
+        .addIntegerOption(o =>
+            o.setName("id")
+                .setDescription("Order ID")
+                .setRequired(true)
+        ),
 
     new SlashCommandBuilder()
         .setName("shift")
-        .setDescription("Clock in/out")
+        .setDescription("Clock in or out of shift")
         .addStringOption(o =>
             o.setName("action")
+                .setDescription("Clock in or out")
                 .setRequired(true)
                 .addChoices(
                     { name: "Clock In", value: "in" },
@@ -77,27 +99,31 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName("leaderboard")
-        .setDescription("Top drivers")
+        .setDescription("View top drivers")
 ].map(c => c.toJSON());
 
-// ---------------- REGISTER ----------------
+// ================= REGISTER COMMANDS =================
 
 const rest = new REST({ version: "10" }).setToken(TOKEN);
 
-async function register() {
-    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
-        body: commands
-    });
+async function registerCommands() {
+    await rest.put(
+        Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+        { body: commands }
+    );
+    console.log("Slash commands registered.");
 }
 
-// ---------------- HELPERS ----------------
+// ================= HELPERS =================
 
 async function dm(userId, msg) {
-    const user = await client.users.fetch(userId);
-    try { await user.send(msg); } catch {}
+    try {
+        const user = await client.users.fetch(userId);
+        await user.send(msg);
+    } catch {}
 }
 
-// ---------------- AUTO EXPIRE LOOP ----------------
+// ================= AUTO EXPIRE =================
 
 async function expireOrders() {
     const { data } = await supabase
@@ -108,28 +134,28 @@ async function expireOrders() {
 
     const now = new Date();
 
-    for (const order of data) {
+    for (const order of data || []) {
         if (new Date(order.expires_at) < now) {
             await supabase
                 .from("orders")
                 .update({ status: "Expired" })
                 .eq("id", order.id);
 
-            await dm(order.customer_id, `⏰ Your order #${order.id} expired (no drivers claimed it).`);
+            await dm(order.customer_id, `⏰ Order #${order.id} expired (no driver claimed it).`);
         }
     }
 }
 
-setInterval(expireOrders, 60 * 1000); // every 1 min
+setInterval(expireOrders, 60 * 1000);
 
-// ---------------- BOT READY ----------------
+// ================= READY =================
 
 client.once("ready", async () => {
     console.log(`Logged in as ${client.user.tag}`);
-    await register();
+    await registerCommands();
 });
 
-// ---------------- INTERACTIONS ----------------
+// ================= INTERACTIONS =================
 
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
@@ -139,7 +165,7 @@ client.on("interactionCreate", async (interaction) => {
         const item = interaction.options.getString("item");
         const location = interaction.options.getString("location");
 
-        const expires = new Date(Date.now() + 15 * 60 * 1000); // 15 min expiry
+        const expires = new Date(Date.now() + 15 * 60 * 1000);
 
         const { data } = await supabase
             .from("orders")
@@ -246,7 +272,7 @@ client.on("interactionCreate", async (interaction) => {
             .update({ cancelled: true, status: "Cancelled" })
             .eq("id", id);
 
-        await dm(order.customer_id, `❌ Your order #${id} was cancelled`);
+        await dm(order.customer_id, `❌ Order #${id} was cancelled`);
 
         return interaction.reply({ content: `Cancelled #${id}`, ephemeral: true });
     }
@@ -283,7 +309,8 @@ client.on("interactionCreate", async (interaction) => {
             .eq("status", "Delivered");
 
         const map = {};
-        data.forEach(o => {
+
+        (data || []).forEach(o => {
             if (!o.driver_id) return;
             map[o.driver_id] = (map[o.driver_id] || 0) + 1;
         });
@@ -293,6 +320,7 @@ client.on("interactionCreate", async (interaction) => {
             .slice(0, 10);
 
         let desc = "";
+
         for (const [id, count] of sorted) {
             const user = await client.users.fetch(id);
             desc += `**${user.tag}** — ${count}\n`;
