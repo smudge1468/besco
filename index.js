@@ -66,7 +66,7 @@ const commands = [
         )
         .addStringOption(o =>
             o.setName("state")
-                .setDescription("Order status update")
+                .setDescription("Status update")
                 .setRequired(true)
                 .addChoices(
                     { name: "Accepted", value: "Accepted" },
@@ -86,7 +86,7 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName("shift")
-        .setDescription("Clock in or out of shift")
+        .setDescription("Clock in or out")
         .addStringOption(o =>
             o.setName("action")
                 .setDescription("Clock in or out")
@@ -107,11 +107,15 @@ const commands = [
 const rest = new REST({ version: "10" }).setToken(TOKEN);
 
 async function registerCommands() {
-    await rest.put(
-        Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-        { body: commands }
-    );
-    console.log("Slash commands registered.");
+    try {
+        await rest.put(
+            Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+            { body: commands }
+        );
+        console.log("Slash commands registered.");
+    } catch (err) {
+        console.error("Command registration failed:", err);
+    }
 }
 
 // ================= HELPERS =================
@@ -126,23 +130,27 @@ async function dm(userId, msg) {
 // ================= AUTO EXPIRE =================
 
 async function expireOrders() {
-    const { data } = await supabase
-        .from("orders")
-        .select("*")
-        .eq("status", "Pending")
-        .eq("cancelled", false);
+    try {
+        const { data } = await supabase
+            .from("orders")
+            .select("*")
+            .eq("status", "Pending")
+            .eq("cancelled", false);
 
-    const now = new Date();
+        const now = new Date();
 
-    for (const order of data || []) {
-        if (new Date(order.expires_at) < now) {
-            await supabase
-                .from("orders")
-                .update({ status: "Expired" })
-                .eq("id", order.id);
+        for (const order of data || []) {
+            if (new Date(order.expires_at) < now) {
+                await supabase
+                    .from("orders")
+                    .update({ status: "Expired" })
+                    .eq("id", order.id);
 
-            await dm(order.customer_id, `⏰ Order #${order.id} expired (no driver claimed it).`);
+                await dm(order.customer_id, `⏰ Order #${order.id} expired.`);
+            }
         }
+    } catch (err) {
+        console.error("Expire error:", err);
     }
 }
 
@@ -162,47 +170,49 @@ client.on("interactionCreate", async (interaction) => {
 
     // ========== ORDER ==========
     if (interaction.commandName === "order") {
-        const item = interaction.options.getString("item");
-        const location = interaction.options.getString("location");
+        await interaction.deferReply({ ephemeral: true });
 
-        const expires = new Date(Date.now() + 15 * 60 * 1000);
+        try {
+            const item = interaction.options.getString("item");
+            const location = interaction.options.getString("location");
 
-        const { data } = await supabase
-            .from("orders")
-            .insert({
-                item,
-                location,
-                customer_id: interaction.user.id,
-                status: "Pending",
-                expires_at: expires
-            })
-            .select()
-            .single();
+            const expires = new Date(Date.now() + 15 * 60 * 1000);
 
-        const channel = await client.channels.fetch(ORDER_CHANNEL_ID);
+            const { data, error } = await supabase
+                .from("orders")
+                .insert({
+                    item,
+                    location,
+                    customer_id: interaction.user.id,
+                    status: "Pending",
+                    expires_at: expires
+                })
+                .select()
+                .single();
 
-        channel.send({
-            content: `<@&${ROLE_ID}> New order #${data.id}`,
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle("🍔 New Order")
-                    .addFields(
-                        { name: "ID", value: `${data.id}`, inline: true },
-                        { name: "Item", value: item, inline: true },
-                        { name: "Location", value: location }
-                    )
-                    .setColor("Blue")
-            ]
-        });
+            if (error) {
+                console.error(error);
+                return interaction.editReply("❌ Failed to create order.");
+            }
 
-        return interaction.reply({
-            content: `✅ Order placed (#${data.id})`,
-            ephemeral: true
-        });
+            const channel = await client.channels.fetch(ORDER_CHANNEL_ID);
+
+            await channel.send({
+                content: `<@&${ROLE_ID}> New order #${data.id}`
+            });
+
+            return interaction.editReply(`✅ Order placed (#${data.id})`);
+
+        } catch (err) {
+            console.error(err);
+            return interaction.editReply("❌ Error placing order.");
+        }
     }
 
     // ========== CLAIM ==========
     if (interaction.commandName === "claim") {
+        await interaction.deferReply({ ephemeral: true });
+
         const id = interaction.options.getInteger("id");
 
         const { data: order } = await supabase
@@ -212,7 +222,7 @@ client.on("interactionCreate", async (interaction) => {
             .single();
 
         if (!order || order.status !== "Pending") {
-            return interaction.reply({ content: "❌ Invalid order", ephemeral: true });
+            return interaction.editReply("❌ Invalid order");
         }
 
         await supabase
@@ -220,13 +230,15 @@ client.on("interactionCreate", async (interaction) => {
             .update({ driver_id: interaction.user.id, status: "Accepted" })
             .eq("id", id);
 
-        await dm(order.customer_id, `🚚 Your order #${id} was claimed by ${interaction.user.tag}`);
+        await dm(order.customer_id, `🚚 Order #${id} claimed by ${interaction.user.tag}`);
 
-        return interaction.reply({ content: `Claimed #${id}`, ephemeral: true });
+        return interaction.editReply(`Claimed #${id}`);
     }
 
     // ========== STATUS ==========
     if (interaction.commandName === "status") {
+        await interaction.deferReply({ ephemeral: true });
+
         const id = interaction.options.getInteger("id");
         const state = interaction.options.getString("state");
 
@@ -243,11 +255,13 @@ client.on("interactionCreate", async (interaction) => {
 
         await dm(order.customer_id, `📦 Order #${id}: ${state}`);
 
-        return interaction.reply({ content: `Updated #${id}`, ephemeral: true });
+        return interaction.editReply(`Updated #${id}`);
     }
 
     // ========== CANCEL ==========
     if (interaction.commandName === "cancel") {
+        await interaction.deferReply({ ephemeral: true });
+
         const id = interaction.options.getInteger("id");
 
         const { data: order } = await supabase
@@ -256,15 +270,13 @@ client.on("interactionCreate", async (interaction) => {
             .eq("id", id)
             .single();
 
-        if (!order) {
-            return interaction.reply({ content: "❌ Not found", ephemeral: true });
-        }
+        if (!order) return interaction.editReply("❌ Not found");
 
         if (
             order.customer_id !== interaction.user.id &&
             !interaction.member.permissions.has("Administrator")
         ) {
-            return interaction.reply({ content: "❌ Not allowed", ephemeral: true });
+            return interaction.editReply("❌ Not allowed");
         }
 
         await supabase
@@ -272,13 +284,15 @@ client.on("interactionCreate", async (interaction) => {
             .update({ cancelled: true, status: "Cancelled" })
             .eq("id", id);
 
-        await dm(order.customer_id, `❌ Order #${id} was cancelled`);
+        await dm(order.customer_id, `❌ Order #${id} cancelled`);
 
-        return interaction.reply({ content: `Cancelled #${id}`, ephemeral: true });
+        return interaction.editReply(`Cancelled #${id}`);
     }
 
     // ========== SHIFT ==========
     if (interaction.commandName === "shift") {
+        await interaction.deferReply({ ephemeral: true });
+
         const action = interaction.options.getString("action");
 
         if (action === "in") {
@@ -287,7 +301,7 @@ client.on("interactionCreate", async (interaction) => {
                 active: true
             });
 
-            return interaction.reply({ content: "🟢 Clocked in", ephemeral: true });
+            return interaction.editReply("🟢 Clocked in");
         }
 
         if (action === "out") {
@@ -297,12 +311,14 @@ client.on("interactionCreate", async (interaction) => {
                 .eq("user_id", interaction.user.id)
                 .eq("active", true);
 
-            return interaction.reply({ content: "🔴 Clocked out", ephemeral: true });
+            return interaction.editReply("🔴 Clocked out");
         }
     }
 
     // ========== LEADERBOARD ==========
     if (interaction.commandName === "leaderboard") {
+        await interaction.deferReply();
+
         const { data } = await supabase
             .from("orders")
             .select("driver_id")
@@ -326,7 +342,7 @@ client.on("interactionCreate", async (interaction) => {
             desc += `**${user.tag}** — ${count}\n`;
         }
 
-        return interaction.reply({
+        return interaction.editReply({
             embeds: [
                 new EmbedBuilder()
                     .setTitle("🏆 Leaderboard")
