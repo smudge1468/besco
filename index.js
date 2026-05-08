@@ -166,10 +166,10 @@ client.on("interactionCreate", async (interaction) => {
                 .select()
                 .single();
 
-            if (error) {
-                console.error("SUPABASE ORDER ERROR:", error);
-                return interaction.editReply("❌ Failed to create order.");
-            }
+          if (error) {
+    console.log(JSON.stringify(error, null, 2));
+    return interaction.editReply(`❌ ${error.message}`);
+}
 
             const channel = await client.channels.fetch(ORDER_CHANNEL_ID);
 
