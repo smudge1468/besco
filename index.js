@@ -174,8 +174,36 @@ client.on("interactionCreate", async (interaction) => {
             const channel = await client.channels.fetch(ORDER_CHANNEL_ID);
 
             await channel.send({
-                content: `<@&${DELIVERY_ROLE_ID}> New order #${data.id}`
-            });
+    content: `<@&${DELIVERY_ROLE_ID}> New order #${data.id}`,
+    embeds: [
+        new EmbedBuilder()
+            .setTitle("🍔 New Boosh Order")
+            .setColor("Blue")
+            .addFields(
+                {
+                    name: "🆔 Order ID",
+                    value: `${data.id}`,
+                    inline: true
+                },
+                {
+                    name: "🍟 Item",
+                    value: item,
+                    inline: true
+                },
+                {
+                    name: "📍 Location",
+                    value: location,
+                    inline: false
+                },
+                {
+                    name: "👤 Customer",
+                    value: `${interaction.user.tag}`,
+                    inline: false
+                }
+            )
+            .setTimestamp()
+    ]
+});
 
             return interaction.editReply(`✅ Order placed (#${data.id})`);
 
